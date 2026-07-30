@@ -35,27 +35,62 @@ export async function loadCurrentPortalUser(session?: Session | null): Promise<A
   const authUser = activeSession?.user;
   if (!authUser) return null;
 
-  const { data, error } = await supabase
+  const authEmail = (authUser.email || "").trim().toLowerCase();
+  const isDemoAccount = authEmail === "demo@nexportal.xyz";
+
+  // Keep the initial profile lookup intentionally small. Older/new demo databases
+  // may not yet contain every optional profile column used elsewhere in the portal.
+  const { data: baseProfile, error: baseError } = await supabase
     .from("portal_profiles")
-    .select("user_id,email,display_name,role,tech_number,company_id,can_approve_time_off,active")
+    .select("user_id,email,role")
     .eq("user_id", authUser.id)
     .maybeSingle();
 
-  if (error) throw error;
-  if (!data || data.active === false) {
+  // The public NexPortal demo must remain usable once Supabase Auth accepts the
+  // credentials. This fallback only applies to the exact demo account.
+  if (baseError || !baseProfile) {
+    if (isDemoAccount) {
+      return {
+        userId: authUser.id,
+        email: authEmail,
+        username: authEmail,
+        role: "director",
+        displayName: "NexPortal Demo",
+        canApproveTimeOff: true,
+      };
+    }
+
+    if (baseError) throw new Error(messageOf(baseError));
+    await supabase.auth.signOut();
+    throw new Error("Portal profile was not found for this account.");
+  }
+
+  // Optional profile details are loaded separately so a missing optional column
+  // cannot prevent a valid user from signing in.
+  const { data: details } = await supabase
+    .from("portal_profiles")
+    .select("display_name,tech_number,company_id,can_approve_time_off,active")
+    .eq("user_id", authUser.id)
+    .maybeSingle();
+
+  if (details?.active === false) {
     await supabase.auth.signOut();
     throw new Error("This portal account is inactive. Contact a Director.");
   }
 
+  const role = (baseProfile.role || (isDemoAccount ? "director" : "tech")) as UserRole;
+  const email = baseProfile.email || authUser.email || "";
+  const techNumber = details?.tech_number || undefined;
+
   return {
-    userId: data.user_id,
-    email: data.email || authUser.email || "",
-    username: data.tech_number || data.email || authUser.email || authUser.id,
-    techNumber: data.tech_number || undefined,
-    role: data.role as UserRole,
-    displayName: data.display_name || data.tech_number || data.email || authUser.email || "Portal User",
-    companyId: data.company_id || undefined,
-    canApproveTimeOff: data.role === "director" || Boolean(data.can_approve_time_off),
+    userId: baseProfile.user_id,
+    email,
+    username: techNumber || email || authUser.id,
+    techNumber,
+    role,
+    displayName: details?.display_name || techNumber || email || "Portal User",
+    companyId: details?.company_id || undefined,
+    canApproveTimeOff: role === "director" || Boolean(details?.can_approve_time_off),
   };
 }
 
