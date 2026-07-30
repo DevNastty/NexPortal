@@ -874,7 +874,13 @@ export default function App() {
       setView(defaultViewForRole(next.role));
 
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Unable to sign in.");
+      setAuthError(
+        error instanceof Error
+          ? error.message
+          : typeof error === "object" && error !== null && "message" in error
+            ? String((error as { message?: unknown }).message)
+            : "Unable to sign in."
+      );
     } finally {
       setAuthLoading(false);
     }
